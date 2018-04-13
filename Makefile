@@ -25,3 +25,6 @@ setup_databases:
 	mysql -u root -e 'drop database if exists peewee_test;'
 	mysql -u root -e 'create database peewee_test;'
 
+publish:
+	pipenv run python3 setup.py sdist bdist_wheel
+	pipenv run twine upload dist/*

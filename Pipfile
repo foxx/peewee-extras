@@ -12,3 +12,6 @@ verify_ssl = true
 "peewee" = ">=3.2"
 "psycopg2" = "*"
 "freezegun" = "*"
+
+[packages]
+twine = "*"
