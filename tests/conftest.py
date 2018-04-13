@@ -1,5 +1,5 @@
+"""
 import peewee_extras
-peewee_extras.monkeypatch()
 
 import os
 import py.test
@@ -24,11 +24,9 @@ def get_databases():
 
 @py.test.fixture(scope="function", params=get_databases())
 def database(request):
-    # XXX: ugly code, sorry
-    db = playhouse.db_url.connect(request.param)
-    required_models = []
-    if request.cls:
-        required_models = getattr(request.cls, 'required_models', [])
+    # determine database from env var
+    db_uri = os.environ.get('DATABASE', ':memory:')
+    db = playhouse.db_url.connect(db_uri)
 
     for model in required_models:
         model._meta.database = db
@@ -44,3 +42,4 @@ def database(request):
 
     request.addfinalizer(teardown)
     return db
+"""

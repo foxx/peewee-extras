@@ -1,3 +1,15 @@
+DC_RUN_OPTS := --rm --service-ports
+
+test:
+	pipenv run detox
+
+dcbuild:
+	docker-compose build peewee_extras
+
+dcshell:
+	docker-compose run $(DC_RUN_OPTS) peewee_extras /bin/bash -i
+	
+
 clean:
 	rm -rf *.egg *.egg-info .tox .benchmarks .cache pytestdebug.log \
 		.coverage dist build .eggs

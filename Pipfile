@@ -1,0 +1,18 @@
+[[source]]
+url = "https://pypi.python.org/simple"
+verify_ssl = true
+
+[dev-packages]
+"pytest" = ">=2.8.0"
+"flake8" = "*"
+"tox" = "*"
+"detox" = "*"
+"pytest-cov" = "*"
+"pytest-xdist" = "*"
+"peewee" = ">=3.2"
+"passlib" = ">=1.7"
+"helpful" = "*"
+"psycopg2" = "*"
+
+[packages]
+helpful = "*"

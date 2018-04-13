@@ -1,5 +1,6 @@
 import logging
 import peewee
+import playhouse
 import os
 import datetime
 import binascii
@@ -15,38 +16,42 @@ from collections import OrderedDict
 from peewee import (DateTimeField, BlobField, Field, TextField)
 from helpful import ClassDict, ensure_instance, add_bases, coerce_to_bytes
 
-if six.PY3: # pragma: nocover
-    from urllib.parse import urlparse, parse_qsl, urlencode
-else: # pragma: nocover
-    from urlparse import urlparse, parse_qsl
-    from urllib import urlencode
-
 logger = logging.getLogger(__name__)
 
+
 ####################################################################
-# Monkey patching
+# Model manager
 ####################################################################
 
-class CallableDatabaseMixin(peewee.ModelOptions):
-    @property
-    def database(self):
-        if callable(self._database):
-            return self._database(self)
-        return self._database
+class ModelManager(list):
+    """Handles model registration"""
 
-    @database.setter
-    def database(self, value):
-        self._database = value
+    def __init__(self, database_manager):
+        self.dbm = database_manager
 
+    def create_tables(self):
+        """Create database tables"""
+        for cls in self:
+            db = self.dbm.db_for_write(cls)
+            with cls.bind_ctx(db):
+                cls.create_table(fail_silently=True)
 
-def monkeypatch():
-    """
-    Peewee does not support plugins, therefore we must monkeypatch
-    See https://github.com/coleifer/peewee/issues/804
-    See https://github.com/coleifer/peewee/issues/825
-    """
-    if peewee.ModelOptions != CallableDatabaseMixin:
-        peewee.ModelOptions = CallableDatabaseMixin
+    def destroy_tables(self):
+        """Destroy database tables"""
+        for cls in self:
+            db = self.dbm.db_for_write(cls)
+            with cls.bind_ctx(db):
+                cls.drop_table(fail_silently=True)
+
+    def register(self, model_cls):
+        """Register model(s) with app"""
+        assert issubclass(model_cls, peewee.Model)
+        assert not hasattr(model_cls._meta, 'database_manager')
+        if model_cls in self:
+            raise RuntimeError("Model already registered")
+        self.append(model_cls)
+        model_cls._meta.database_manager = self.dbm
+        return model_cls
 
 
 ####################################################################
@@ -57,49 +62,41 @@ def monkeypatch():
 class DatabaseManager(dict):
     """Database manager"""
 
-    def connect_all(self):
+    def __init__(self):
+        self.routers = set()
+        self.models = ModelManager(database_manager=self)
+
+    def connect(self):
         """Create connection for all databases"""
         for name, connection in self.items():
             connection.connect()
 
-    def disconnect_all(self):
+    def disconnect(self):
         """Disconnect from all databases"""
         # closing in-memory databases should cause it to be deleted
         for name, connection in self.items():
             if not connection.is_closed():
                 connection.close()
 
+    def db_for_write(self, model):
+        """Find matching database router"""
+        for router in self.routers:
+            r = router.db_for_write(model)
+            if r is not None:
+                return r
+        return self.get('default')
+
 
 ####################################################################
-# Model manager
+# Database routers
 ####################################################################
 
-class ModelManager(list):
-    """Handles model registration"""
+class DatabaseRouter(object):
+    def db_for_read(self, model):
+        return None
 
-    def create_tables(self, drop_existing=False):
-        """
-        Create database tables
-
-        :attr drop_existing (bool): If table exists, drop and re-create
-        """
-        for cls in self:
-            if drop_existing:
-                cls.drop_table(fail_silently=True)
-            cls.create_table(fail_silently=True)
-
-    def destroy_tables(self):
-        """Destroy database tables"""
-        for cls in self:
-            cls.drop_table(fail_silently=True)
-
-    def register(self, model_cls):
-        """Register model(s) with app"""
-        ensure_instance(model_cls, peewee.Model)
-        if model_cls in self:
-            raise ValueError("Model already registered")
-        self.append(model_cls)
-        return model_cls
+    def db_for_write(self, model):
+        return None
 
 
 ####################################################################
@@ -115,20 +112,40 @@ class DatabaseRoutingMixin(object):
     """
 
     @classmethod
+    def db_for_read(self):
+        return self.dbm.db_for_read(self)
+
+    @classmethod
+    def db_for_write(self):
+        return self.dbm.db_for_write(self)
+
+    @classmethod
     def select(cls, *args, **kwargs):
-        query = super(DatabaseRoutingMixin, self).select(*args, **kwargs)
-        query.database = cls.get_read_database()
+        query = super(DatabaseRoutingMixin, cls).select(*args, **kwargs)
+        query._database = cls._meta.database_manager.db_for_read(cls)
         return query
 
     @classmethod
-    def get_read_database(self):
-        return self._meta.database
+    def insert(cls, *args, **kwargs):
+        query = super(DatabaseRoutingMixin, cls).insert(*args, **kwargs)
+        query._database = cls._meta.database_manager.db_for_write(cls)
+        return query
+
+    @classmethod
+    def update(cls, *args, **kwargs):
+        query = super(DatabaseRoutingMixin, cls).update(*args, **kwargs)
+        query._database = cls._meta.database_manager.db_for_write(cls)
+        return query
 
     @classmethod
     def raw(cls, *args, **kwargs):
-        query = super(DatabaseRoutingMixin, self).raw(*args, **kwargs)
-        if query._sql.lower().startswith('select'):
-            query.database = cls.get_read_database()
+        query = super(DatabaseRoutingMixin, cls).raw(*args, **kwargs)
+
+        # only selects go into read db, otherwise default to write db
+        query._database = cls._meta.database_manager.db_for_write(cls)
+        if query._sql.lower().startswith('select'): # XXX: is this case insensitive?
+            query._database = cls._meta.database_manager.db_for_read(cls)
+
         return query
 
 
@@ -137,8 +154,24 @@ class DatabaseRoutingMixin(object):
 ####################################################################
 
 
-class Model(peewee.Model, DatabaseRoutingMixin):
-    """Custom model for common functionality"""
+'''
+class Metadata(peewee.Metadata):
+    @property
+    def database(self):
+        dbm = getattr(self, 'database_manager', None)
+        if not dbm: return self._database
+        return self._database
+
+    @database.setter
+    def database(self, value):
+        self._database = value
+'''
+
+class Model(DatabaseRoutingMixin, peewee.Model):
+    """Custom model"""
+
+    #class Meta:
+    #    model_metadata_class = Metadata
 
     def update_instance(self, **kwargs):
         for k, v in kwargs.items():
@@ -146,16 +179,27 @@ class Model(peewee.Model, DatabaseRoutingMixin):
         self.save()
 
     @classmethod
+    def create_or_get(self, **kwargs):
+        """
+        TODO: needs unit test
+        """
+        with self.atomic():
+            try:
+                return self.create(**kwargs)
+            except peewee.IntegrityError:
+                return self.get(**kwargs)
+
+    @classmethod
     def get_or_none(cls, **kwargs):
         """
-        Return object or None
-        XXX: needs UT
+        XXX: needs unit test
         """
         try:
             return cls.get(**kwargs)
         except cls.DoesNotExist:
             return None
 
+    @classmethod
     def atomic(self):
         """Shortcut method for creating atomic context"""
         return self._meta.database.atomic()
@@ -189,6 +233,8 @@ class Model(peewee.Model, DatabaseRoutingMixin):
         elif len(results) > 1:
             raise peewee.IntegrityError("Too many rows")
         return results[0]
+
+
 
 
 ####################################################################
@@ -359,3 +405,14 @@ class HashField(TextField):
         key = coerce_to_bytes(self.key) if self.key else None
         return value+key if key else value
 
+
+
+"""
+
+if six.PY3: # pragma: nocover
+    from urllib.parse import urlparse, parse_qsl, urlencode
+else: # pragma: nocover
+    from urlparse import urlparse, parse_qsl
+    from urllib import urlencode
+
+"""
