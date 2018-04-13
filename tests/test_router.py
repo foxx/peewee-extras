@@ -1,18 +1,19 @@
 import peewee
 import pytest
 import playhouse.db_url
-from peewee_extras import Model, DatabaseRouter, DatabaseManager
 
-class TestModelBase(Model):
+from freezegun import freeze_time
+from peewee_extras import (Model, DatabaseRouter, DatabaseManager, 
+    TimestampModelMixin)
+
+####################################################################
+# Fixtures and bases
+####################################################################
+
+class PlayModelBase(Model):
     name = peewee.TextField(null=True)
     class Meta:
         db_table = 'test_model'
-
-
-@pytest.fixture
-def TestModel():
-    class TestModel(TestModelBase): pass
-    return TestModel
 
 
 @pytest.fixture
@@ -27,21 +28,44 @@ def dbm():
     db_other = playhouse.db_url.connect('sqlite:///:memory:')
     dbm['other'] = db_other
     
-    return dbm
-
-
-def test_database_manager(dbm):
     dbm.connect()
+    yield dbm
     dbm.disconnect()
 
+
+@pytest.fixture
+def PlayModel(dbm):
+    @dbm.models.register
+    class PlayModel(PlayModelBase): 
+        pass
+    
+    assert PlayModel._meta.database == dbm['default']
+    dbm.models.create_tables()
+    return PlayModel
+
+####################################################################
+# Model manager test
+####################################################################
+
+def test_mm_destroy_tables(dbm, PlayModel):
+    dbm.models.destroy_tables()
+
+def test_mm_already_registered(dbm, PlayModel):
+    with pytest.raises(RuntimeError):
+        dbm.models.register(PlayModel)
+
+
+####################################################################
+# Router test
+####################################################################
 
 def test_database_router(dbm):
     """
     Unit test for database routing
     """
 
-    class DBDefault(TestModelBase): pass
-    class DBOther(TestModelBase): pass
+    class DBDefault(PlayModelBase): pass
+    class DBOther(PlayModelBase): pass
 
     class RouterDefault(DatabaseRouter):
         pass
@@ -62,53 +86,76 @@ def test_database_router(dbm):
     assert dbm.get_database(DBOther) == dbm['other']
 
 
-def test_database_router_model(dbm):
 
-    @dbm.models.register
-    class TestModel(TestModelBase):
-        pass
+####################################################################
+# Model tests
+####################################################################
 
-    assert TestModel._meta.database == dbm['default']
+def test_update_instance(dbm, PlayModel):
+    o1 = PlayModel.create(name='hello')
+    o1.update_instance(name='world')
+    assert o1.refetch().name == 'world'
 
 
-def test_crud(dbm):
-    @dbm.models.register
-    class TestModel(TestModelBase):
-        pass
-
+def test_crud(dbm, PlayModel):
     # ensure writes are working
-    dbm.models.create_tables()
-    o1 = TestModel.create(name='hello')
-    o2 = TestModel.get(name='hello')
+    o1 = PlayModel.create(name='hello')
+    o2 = PlayModel.get(name='hello')
     assert o1.id == o2.id
 
 
-def test_create_or_get(dbm):
-    @dbm.models.register
-    class TestModel(TestModelBase):
-        pass
+def test_refetch(dbm, PlayModel):
+    o1 = PlayModel.create(id=1)
+    o2 = o1.refetch()
+    assert o1 == o2
 
-    # create db tables
-    dbm.models.create_tables()
 
-    o1, created = TestModel.create_or_get(id=1)
+def test_refetch_does_not_exist(dbm, PlayModel):
+    o1 = PlayModel.create(id=1)
+    o1.delete().execute()
+    with pytest.raises(PlayModel.DoesNotExist):
+        o1.refetch()
+
+
+def test_create_or_get(dbm, PlayModel):
+    o1, created = PlayModel.create_or_get(id=1)
     assert created is True
 
-    o1, created = TestModel.create_or_get(id=1)
+    o1, created = PlayModel.create_or_get(id=1)
     assert created is False
 
-def test_get_or_none(dbm):
-    @dbm.models.register
-    class TestModel(TestModelBase):
-        pass
 
-    # create db tables
-    dbm.models.create_tables()
-
-    o = TestModel.get_or_none(id=1)
+def test_get_or_none(dbm, PlayModel):
+    o = PlayModel.get_or_none(id=1)
     assert o is None
 
-    o1 = TestModel.create(id=1)
-    o2 = TestModel.get_or_none(id=1)
+    o1 = PlayModel.create(id=1)
+    o2 = PlayModel.get_or_none(id=1)
     assert o1 == o2
-    
+
+
+def test_get_primary_key_ref(dbm, PlayModel):
+
+    o1 = PlayModel.create(id=1)
+    assert o1.get_primary_key_ref() == {'id': 1}
+
+
+####################################################################
+# Field tests
+####################################################################
+
+import peewee
+import datetime
+
+def test_timestamp_model(dbm):
+    @dbm.models.register
+    class PlayModel(TimestampModelMixin, PlayModelBase):
+        pass
+
+    dbm.models.create_tables()
+ 
+    dt = datetime.datetime(2018, 1, 1, 0, 0, 0)
+    with freeze_time(dt):
+        o1 = PlayModel.create(name='hello')
+        assert o1.created == dt
+
