@@ -3,8 +3,6 @@ from setuptools import setup, find_packages
 base_requirements = [
     'peewee>=3.2',
     'six',
-    'passlib>=1.6',
-    'helpful>=0.8'
 ]
 
 setup(

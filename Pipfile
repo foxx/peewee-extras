@@ -10,10 +10,5 @@ verify_ssl = true
 "pytest-cov" = "*"
 "pytest-xdist" = "*"
 "peewee" = ">=3.2"
-"passlib" = ">=1.7"
-"helpful" = "*"
 "psycopg2" = "*"
-
-[packages]
-helpful = "*"
-freezegun = "*"
+"freezegun" = "*"

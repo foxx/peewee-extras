@@ -1,22 +1,6 @@
-import logging
 import peewee
-import playhouse
-import os
 import datetime
-import binascii
-import json
-import socket
-import passlib.hash
-import inspect
-import six
-
-from uuid import uuid4, UUID
-from warnings import warn
-from collections import OrderedDict
-from peewee import (DateTimeField, BlobField, Field, TextField)
-from helpful import ClassDict, ensure_instance, add_bases, coerce_to_bytes
-
-logger = logging.getLogger(__name__)
+from peewee import DateTimeField
 
 
 ####################################################################
@@ -69,7 +53,6 @@ class DatabaseManager(dict):
 
     def disconnect(self):
         """Disconnect from all databases"""
-        # closing in-memory databases should cause it to be deleted
         for name, connection in self.items():
             if not connection.is_closed():
                 connection.close()
