@@ -32,16 +32,12 @@ class ModelManager(list):
     def create_tables(self):
         """Create database tables"""
         for cls in self:
-            db = self.dbm.db_for_write(cls)
-            with cls.bind_ctx(db):
-                cls.create_table(fail_silently=True)
+            cls.create_table(fail_silently=True)
 
     def destroy_tables(self):
         """Destroy database tables"""
         for cls in self:
-            db = self.dbm.db_for_write(cls)
-            with cls.bind_ctx(db):
-                cls.drop_table(fail_silently=True)
+            cls.drop_table(fail_silently=True)
 
     def register(self, model_cls):
         """Register model(s) with app"""
@@ -50,7 +46,7 @@ class ModelManager(list):
         if model_cls in self:
             raise RuntimeError("Model already registered")
         self.append(model_cls)
-        model_cls._meta.database_manager = self.dbm
+        model_cls._meta.database = self.dbm
         return model_cls
 
 
@@ -78,10 +74,10 @@ class DatabaseManager(dict):
             if not connection.is_closed():
                 connection.close()
 
-    def db_for_write(self, model):
+    def get_database(self, model):
         """Find matching database router"""
         for router in self.routers:
-            r = router.db_for_write(model)
+            r = router.get_database(model)
             if r is not None:
                 return r
         return self.get('default')
@@ -92,61 +88,8 @@ class DatabaseManager(dict):
 ####################################################################
 
 class DatabaseRouter(object):
-    def db_for_read(self, model):
+    def get_database(self, model):
         return None
-
-    def db_for_write(self, model):
-        return None
-
-
-####################################################################
-# Database routing
-####################################################################
-
-class DatabaseRoutingMixin(object):
-    """
-    Although the cleanest approach is to hook into Query._execute,
-    this can only be achieved via monkey patching which is not very
-    clean. Instead we will override select() and raw(), as all other
-    queries are destined for write DB anyway
-    """
-
-    @classmethod
-    def db_for_read(self):
-        return self.dbm.db_for_read(self)
-
-    @classmethod
-    def db_for_write(self):
-        return self.dbm.db_for_write(self)
-
-    @classmethod
-    def select(cls, *args, **kwargs):
-        query = super(DatabaseRoutingMixin, cls).select(*args, **kwargs)
-        query._database = cls._meta.database_manager.db_for_read(cls)
-        return query
-
-    @classmethod
-    def insert(cls, *args, **kwargs):
-        query = super(DatabaseRoutingMixin, cls).insert(*args, **kwargs)
-        query._database = cls._meta.database_manager.db_for_write(cls)
-        return query
-
-    @classmethod
-    def update(cls, *args, **kwargs):
-        query = super(DatabaseRoutingMixin, cls).update(*args, **kwargs)
-        query._database = cls._meta.database_manager.db_for_write(cls)
-        return query
-
-    @classmethod
-    def raw(cls, *args, **kwargs):
-        query = super(DatabaseRoutingMixin, cls).raw(*args, **kwargs)
-
-        # only selects go into read db, otherwise default to write db
-        query._database = cls._meta.database_manager.db_for_write(cls)
-        if query._sql.lower().startswith('select'): # XXX: is this case insensitive?
-            query._database = cls._meta.database_manager.db_for_read(cls)
-
-        return query
 
 
 ####################################################################
@@ -154,24 +97,26 @@ class DatabaseRoutingMixin(object):
 ####################################################################
 
 
-'''
 class Metadata(peewee.Metadata):
+    _database = None
+
     @property
     def database(self):
-        dbm = getattr(self, 'database_manager', None)
-        if not dbm: return self._database
+        if isinstance(self._database, DatabaseManager):
+            db = self._database.get_database(self)
+            if db: return db
         return self._database
 
     @database.setter
     def database(self, value):
         self._database = value
-'''
 
-class Model(DatabaseRoutingMixin, peewee.Model):
+
+class Model(peewee.Model):
     """Custom model"""
 
-    #class Meta:
-    #    model_metadata_class = Metadata
+    class Meta:
+        model_metadata_class = Metadata
 
     def update_instance(self, **kwargs):
         for k, v in kwargs.items():
@@ -180,14 +125,11 @@ class Model(DatabaseRoutingMixin, peewee.Model):
 
     @classmethod
     def create_or_get(self, **kwargs):
-        """
-        TODO: needs unit test
-        """
         with self.atomic():
             try:
-                return self.create(**kwargs)
+                return self.create(**kwargs), True
             except peewee.IntegrityError:
-                return self.get(**kwargs)
+                return self.get(**kwargs), False
 
     @classmethod
     def get_or_none(cls, **kwargs):
@@ -235,8 +177,6 @@ class Model(DatabaseRoutingMixin, peewee.Model):
         return results[0]
 
 
-
-
 ####################################################################
 # Mixins
 ####################################################################
@@ -249,6 +189,7 @@ class TimestampModelMixin(object):
     def save(self, **kwargs):
         self.modified = datetime.datetime.now()
         return super(TimestampModelMixin, self).save(**kwargs)
+
 
 ####################################################################
 # Fields
