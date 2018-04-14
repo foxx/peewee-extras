@@ -1,7 +1,7 @@
 DC_RUN_OPTS := --rm --service-ports
 
 test:
-	pipenv run detox
+	pipenv run python3 -m pytest
 
 dcbuild:
 	docker-compose build peewee_extras

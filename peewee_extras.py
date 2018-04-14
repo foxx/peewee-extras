@@ -139,7 +139,7 @@ class Model(peewee.Model):
     @classmethod
     def from_cursor_ref(self, cursor):
         """Returns model instance from unique cursor reference"""
-        return self.__class__.get(**cursor)
+        return self.get(**cursor)
 
     def refetch(self):
         """
@@ -180,40 +180,71 @@ class Pagination:
     pass
 
 
+
+
 class PrimaryKeyPagination(Pagination):
     """
-    Pagination based on Primary Key
+    Primary key pagination
+    
+    It does not support models with compound keys or no primary key
+    as doing so would require using LIMIT/OFFSET which has terrible
+    performance at scale. If you want this, send a PR. 
 
-    This also supports compound primary keys
     XXX: Do we want to add encryption support? (yes but it should be outside here)
     """
 
-    def filter_query(self, query, cursor, count):
-        """Return filtered queryset with pagination applied"""
-        fields = self._meta.get_primary_keys()
+    @classmethod
+    def paginate_query(self, query, offset, count, sort_params=None):
+        """
+        Apply pagination to query
 
-        # ensure our model has a primary key
+        :attr query: Instance of `peewee.Query`
+        :attr offset: Pagination offset, str/int
+        :attr count: Max rows to return
+        :attr sort_params: List of tuples, e.g. [('id', 'asc')]
+
+        :returns: Instance of `peewee.Query`
+        """
+        assert isinstance(query, peewee.Query)
+        assert isinstance(offset, (str, int))
+        assert isinstance(count, int)
+        assert isinstance(sort_params, (list, set, tuple, type(None)))
+
+         # ensure our model has a primary key
+        fields = query.model._meta.get_primary_keys()
         if len(fields) == 0:
             raise peewee.ProgrammingError(
                 'Cannot apply pagination on model without primary key')
 
-        # model has a single primary key field
-        if len(fields) == 1:
-            field = fields.keys()[0]
-            return query.where(field.name == cursor).limit(count)
-
-        # model has a compound primary key
+        # ensure our model doesn't use a compound primary key
         if len(fields) > 1:
-            # ensure our cursor keys match the compound index keys
-            assert isinstance(cursor, dict), "Expected cursor type 'dict'"
-            expect_field_names = [ field.name for field in fields ]
-            if cursor.keys() != expect_field_names:
-                raise ValueError("Cursor field names do not match compound primary key")
+            raise peewee.ProgrammingError(
+                'Cannot apply pagination on model with compound primary key')
 
-            # apply cursor to filter
-            filters = {field.name: cursor[field.name] for field in fields}
-            return query.where(**filters).limit(count)
+        # apply offset
+        query = query.where(fields[0] >= offset)
+        query = query.order_by(fields[0].asc())
 
+        # do we need to apply sorting?
+        if sort_params is None: return query
+
+        order_bys = []
+        for field, direction in sort_params:
+            # does this field have a valid sort direction?
+            if not isinstance(direction, str):
+                raise ValueError("Invalid sort direction on field '{}'".format(field))
+
+            direction = direction.lower().strip()
+            if direction not in ['asc', 'desc']:
+                raise ValueError("Invalid sort direction on field '{}'".format(field))
+
+            # apply sorting
+            order_by = peewee.SQL(field)
+            order_by = getattr(order_by, direction)()
+            order_bys += [order_by]
+
+        query = query.order_by(*order_bys)
+        return query
 
 
 ####################################################################
@@ -261,35 +292,6 @@ class ModelCRUD:
     '''
 
 
-    def apply_sort(self, query, params):
-        """
-        Apply sorting to query
-        """
-        assert isinstance(params, dict)
-        if not params: return query
-
-        order_bys = []
-        for field, direction in params.items():
-            # is this field allowed for sort?
-            if field not in self.sort_fields:
-                raise ValueError("Cannot sort on field '{}'".format(field))
-
-            # does this field have a valid sort direction?
-            if not isinstance(direction, str):
-                raise ValueError("Invalid sort direction on field '{}'".format(field))
-
-            direction = direction.lower().strip()
-            if direction not in ['asc', 'desc']:
-                raise ValueError("Invalid sort direction on field '{}'".format(field))
-
-            # apply sorting
-            order_by = peewee.SQL(field)
-            order_by = getattr(order_by, direction)()
-            order_bys += [order_by]
-
-        query = query.order_by(*order_bys)
-        return query
-
     def get_query(self):
         """Return query for our model"""
         return self.query
@@ -333,6 +335,12 @@ class ModelCRUD:
         # determine next cursor position
         next_item = items.pop(1)
         next_cursor = next_item.to_cursor_ref()
+
+        '''
+        # is this field allowed for sort?
+        if field not in self.sort_fields:
+            raise ValueError("Cannot sort on field '{}'".format(field))
+        '''
 
         return items, next_cursor
 

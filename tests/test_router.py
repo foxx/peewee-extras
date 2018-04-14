@@ -134,10 +134,13 @@ def test_get_or_none(dbm, PlayModel):
     assert o1 == o2
 
 
-def test_get_primary_key_ref(dbm, PlayModel):
-
+def test_cursor_ref(dbm, PlayModel):
+    data = dict(id=1)
     o1 = PlayModel.create(id=1)
-    assert o1.get_primary_key_ref() == {'id': 1}
+    assert o1.to_cursor_ref() == data
+
+    o2 = PlayModel.from_cursor_ref(data)
+    assert o1 == o2
 
 
 ####################################################################

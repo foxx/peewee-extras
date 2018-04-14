@@ -161,3 +161,39 @@ else: # pragma: nocover
     from urllib import urlencode
 
 """
+
+
+        '''
+
+        # cursor offset should match primary key
+        pk_field_names = [ field.name for field in fields ]
+        if pk_field_names != list(params.keys()):
+            raise ValueError("Cursor fields do not match primary key fields")
+ 
+        x = functools.reduce(operator.and_, x, True)
+        query = query.where(x)
+       
+        # apply filters to query
+        import operator
+        import functools
+
+        x = []
+        for fname, fvalue in params.items():
+            f = query.model._meta.fields[fname]
+            #query = query.where(f >= fvalue)
+            x += [f >= fvalue]
+ 
+        # model has a compound primary key
+        if len(fields) > 1:
+            # ensure our cursor keys match the compound index keys
+            assert isinstance(cursor, dict), "Expected cursor type 'dict'"
+            expect_field_names = [ field.name for field in fields ]
+            if cursor.keys() != expect_field_names:
+                raise ValueError("Cursor field names do not match compound primary key")
+
+            # apply cursor to filter
+            filters = {field.name: cursor[field.name] for field in fields}
+            return query.where(**filters).limit(count)
+        '''
+
+
