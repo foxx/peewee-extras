@@ -128,17 +128,18 @@ class Model(peewee.Model):
     def atomic(self):
         """Shortcut method for creating atomic context"""
         return self._meta.database.atomic()
-
-    def get_primary_key_ref(self):
-        """
-        Returns dict of values needed to refetch row
-        :rtype: dict
-        :returns: Dict of primary key values
-        """
+    
+    def to_cursor_ref(self):
+        """Returns dict of values to uniquely reference this item"""
         fields = self._meta.get_primary_keys()
         assert fields
         values = {field.name:self.__data__[field.name] for field in fields}
         return values
+
+    @classmethod
+    def from_cursor_ref(self, cursor):
+        """Returns model instance from unique cursor reference"""
+        return self.__class__.get(**cursor)
 
     def refetch(self):
         """
@@ -148,8 +149,8 @@ class Model(peewee.Model):
 
         XXX: Add support for models without PK
         """
-        filters = self.get_primary_key_ref()
-        return self.__class__.get(**filters)
+        ref = self.to_cursor_ref()
+        return self.from_cursor_ref(ref)
 
 
 ####################################################################
@@ -169,4 +170,182 @@ class TimestampModelMixin(Model):
     def save(self, **kwargs):
         self.modified = datetime.datetime.now()
         return super(TimestampModelMixin, self).save(**kwargs)
+
+
+####################################################################
+# Pagination
+####################################################################
+
+class Pagination:
+    pass
+
+
+class PrimaryKeyPagination(Pagination):
+    """
+    Pagination based on Primary Key
+
+    This also supports compound primary keys
+    XXX: Do we want to add encryption support? (yes but it should be outside here)
+    """
+
+    def filter_query(self, query, cursor, count):
+        """Return filtered queryset with pagination applied"""
+        fields = self._meta.get_primary_keys()
+
+        # ensure our model has a primary key
+        if len(fields) == 0:
+            raise peewee.ProgrammingError(
+                'Cannot apply pagination on model without primary key')
+
+        # model has a single primary key field
+        if len(fields) == 1:
+            field = fields.keys()[0]
+            return query.where(field.name == cursor).limit(count)
+
+        # model has a compound primary key
+        if len(fields) > 1:
+            # ensure our cursor keys match the compound index keys
+            assert isinstance(cursor, dict), "Expected cursor type 'dict'"
+            expect_field_names = [ field.name for field in fields ]
+            if cursor.keys() != expect_field_names:
+                raise ValueError("Cursor field names do not match compound primary key")
+
+            # apply cursor to filter
+            filters = {field.name: cursor[field.name] for field in fields}
+            return query.where(**filters).limit(count)
+
+
+
+####################################################################
+# Model List
+# XXX: Restrict which fields can be filtered
+# XXX: Add sort capabilities
+####################################################################
+
+
+class ModelCRUD:
+    paginator = None
+    query = None
+
+    sort_fields = []
+    filter_fields = []
+
+    '''
+    def get_sort_schema(self):
+        """
+        Returns marshmallow schema for validating sort parameters
+
+        This is dynamically generated from `sort_fields` but can be
+        overwritten with custom logic if desired
+        """
+        attrs = {}
+        for field in self.sort_fields:
+            # convert sort direction to lower and remove any whitespace
+            key = 'lower_{}'.format(field)
+            attrs[key] = post_load(lambda item: item.lower().strip())
+
+            # validate sort direction
+            attrs[field] = marshmallow.fields.String(
+                validator=marshmallow.validate.OneOf('asc', 'desc'))
+
+        return type('SortSchema', (marshmallow.Schema,), attrs)
+
+        # do we have valid sort parameters?
+        sort_schema = self.get_sort_schema()
+        try:
+            clean_params = sort_schema.dump(params)
+        except marshmallow.ValidationError as exc:
+            nexc = ValueError("Invalid sort parameters specified")
+            nexc.errors = exc.messages
+            raise nexc
+    '''
+
+
+    def apply_sort(self, query, params):
+        """
+        Apply sorting to query
+        """
+        assert isinstance(params, dict)
+        if not params: return query
+
+        order_bys = []
+        for field, direction in params.items():
+            # is this field allowed for sort?
+            if field not in self.sort_fields:
+                raise ValueError("Cannot sort on field '{}'".format(field))
+
+            # does this field have a valid sort direction?
+            if not isinstance(direction, str):
+                raise ValueError("Invalid sort direction on field '{}'".format(field))
+
+            direction = direction.lower().strip()
+            if direction not in ['asc', 'desc']:
+                raise ValueError("Invalid sort direction on field '{}'".format(field))
+
+            # apply sorting
+            order_by = peewee.SQL(field)
+            order_by = getattr(order_by, direction)()
+            order_bys += [order_by]
+
+        query = query.order_by(*order_bys)
+        return query
+
+    def get_query(self):
+        """Return query for our model"""
+        return self.query
+
+    def get_paginator(self):
+        """Return pagination for our model"""
+        return self.paginator
+
+    def apply_filters(self, query, filters):
+        """
+        Apply user specified filters to query
+        """
+        assert isinstance(query, peewee.Query)
+        assert isinstance(filters, dict)
+
+    def list(self, filters, cursor, count):
+        """
+        List items from query
+        """
+        assert isinstance(filters, dict), "expected filters type 'dict'"
+        assert isinstance(cursor, dict), "expected cursor type 'dict'"
+
+        # start with our base query
+        query = self.get_query()
+        assert isinstance(query, peewee.Query)
+
+        # XXX: convert and apply user specified filters
+        #filters = {field.name: cursor[field.name] for field in fields}
+        #query.where(
+
+        paginator = self.get_paginator()
+        assert isinstance(paginator, Pagination)
+
+        # always include an extra row for next cursor position
+        count += 1
+
+        # apply pagination to query
+        pquery = paginator.filter_query(query, cursor, count)
+        items = [ item for item in pquery ]
+
+        # determine next cursor position
+        next_item = items.pop(1)
+        next_cursor = next_item.to_cursor_ref()
+
+        return items, next_cursor
+
+    def retrieve(self, cursor):
+        """
+        Retrieve items from query
+        """
+        assert isinstance(cursor, dict), "expected cursor type 'dict'"
+
+        # look for record in query
+        query = self.get_query()
+        assert isinstance(query, peewee.Query)
+
+        query
+        return query.get(**cursor)
 
