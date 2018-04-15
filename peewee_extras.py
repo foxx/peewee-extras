@@ -1,5 +1,7 @@
 import peewee
 import datetime
+import playhouse
+
 from peewee import DateTimeField
 
 
@@ -64,6 +66,15 @@ class DatabaseManager(dict):
             if r is not None:
                 return r
         return self.get('default')
+
+    def register(self, name, db):
+        if isinstance(db, str):
+            self[name] = playhouse.db_url.connect(db)
+        elif isinstance(db, peewee.Database):
+            self[name] = db
+        else:
+            raise ValueError("unexpected 'db' type")
+
 
 
 ####################################################################
@@ -194,21 +205,21 @@ class PrimaryKeyPagination(Pagination):
     """
 
     @classmethod
-    def paginate_query(self, query, offset, count, sort_params=None):
+    def paginate_query(self, query, count, offset=None, sort=None):
         """
         Apply pagination to query
 
         :attr query: Instance of `peewee.Query`
-        :attr offset: Pagination offset, str/int
         :attr count: Max rows to return
-        :attr sort_params: List of tuples, e.g. [('id', 'asc')]
+        :attr offset: Pagination offset, str/int
+        :attr sort: List of tuples, e.g. [('id', 'asc')]
 
         :returns: Instance of `peewee.Query`
         """
         assert isinstance(query, peewee.Query)
-        assert isinstance(offset, (str, int))
         assert isinstance(count, int)
-        assert isinstance(sort_params, (list, set, tuple, type(None)))
+        assert isinstance(offset, (str, int, type(None)))
+        assert isinstance(sort, (list, set, tuple, type(None)))
 
          # ensure our model has a primary key
         fields = query.model._meta.get_primary_keys()
@@ -222,28 +233,34 @@ class PrimaryKeyPagination(Pagination):
                 'Cannot apply pagination on model with compound primary key')
 
         # apply offset
-        query = query.where(fields[0] >= offset)
-        query = query.order_by(fields[0].asc())
+        if offset is not None:
+            query = query.where(fields[0] >= offset)
 
         # do we need to apply sorting?
-        if sort_params is None: return query
-
         order_bys = []
-        for field, direction in sort_params:
-            # does this field have a valid sort direction?
-            if not isinstance(direction, str):
-                raise ValueError("Invalid sort direction on field '{}'".format(field))
+        if sort:
+            for field, direction in sort:
+                # does this field have a valid sort direction?
+                if not isinstance(direction, str):
+                    raise ValueError("Invalid sort direction on field '{}'".format(field))
 
-            direction = direction.lower().strip()
-            if direction not in ['asc', 'desc']:
-                raise ValueError("Invalid sort direction on field '{}'".format(field))
+                direction = direction.lower().strip()
+                if direction not in ['asc', 'desc']:
+                    raise ValueError("Invalid sort direction on field '{}'".format(field))
 
-            # apply sorting
-            order_by = peewee.SQL(field)
-            order_by = getattr(order_by, direction)()
-            order_bys += [order_by]
+                # apply sorting
+                order_by = peewee.SQL(field)
+                order_by = getattr(order_by, direction)()
+                order_bys += [order_by]
 
+        # add primary key ordering after user sorting
+        order_bys += [fields[0].asc()]
+
+        # apply ordering and limits
         query = query.order_by(*order_bys)
+        query = query.limit(count)
+
+        #print(query.sql())
         return query
 
 

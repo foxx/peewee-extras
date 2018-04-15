@@ -1,15 +1,109 @@
+import os
+import pickle
+
 import peewee
 import peewee_extras as pe
 import pytest
 import playhouse
 
+from faker import Faker
+from pprint import pprint
+from tabulate import tabulate
+
+
+####################################################################
+# Test data loader
+####################################################################
+
+class ResultStore:
+    """
+    Ghetto implementation of betamax/VCR for static data
+    """
+    def __init__(self, record_mode, data_dir):
+        assert isinstance(record_mode, bool)
+        assert isinstance(data_dir, str)
+
+        self.record_mode = record_mode
+        self.data_dir = data_dir
+
+    def check(self, name, value):
+        if not os.path.exists(self.data_dir):
+            os.makedirs(self.data_dir)
+
+        fname = '{}.pickle'.format(name)
+        fpath = os.path.join(self.data_dir, fname)
+
+        if not os.path.exists(fpath):
+            if self.record_mode is False:
+                raise Exception("Result missing and record mode disabled")
+
+            with open(fpath, 'wb') as fh:
+                pickle.dump(value, fh)
+                return value
+        else:
+            with open(fpath, 'rb') as fh:
+                return pickle.load(fh)
+
+
+data_dir = os.path.join(os.path.dirname(__file__), 'data')
+rs = ResultStore(record_mode=True, data_dir=data_dir)
+
+
 ####################################################################
 # Fixtures and bases
 ####################################################################
 
-class Animal(pe.Model):
-    tag = peewee.IntegerField(null=False)
-    species = peewee.TextField(null=False)
+class DatabaseManager(pe.DatabaseManager):
+    def populate_models(self):
+        """
+        Populate test models with (predictable) fake data
+        """
+        fake = Faker()
+        fake.seed(0)
+
+        cities = ['Portland', 'Washington', 'Seattle', 'Mountain View']
+
+        items = []
+        for x in range(100):
+            city = cities[x % len(cities)]
+            items += [dict(name=fake.name(), city=city)]
+        Person.insert_many(items).execute()
+        assert Person.select().count() == 100
+
+
+@pytest.fixture
+def dbm():
+    # create manager
+    dbm = DatabaseManager()
+
+    # create db default
+    dbm.register('default', 'sqlite:///:memory:')
+    
+    # register models
+    dbm.models.register(Person)
+    dbm.models.register(CompoundModel)
+
+    dbm.connect()
+    dbm.models.create_tables()
+    dbm.populate_models()
+    yield dbm
+    dbm.disconnect()
+
+
+@pytest.fixture
+def faker():
+    fake = Faker()
+    fake.seed(0)
+    return fake
+
+
+####################################################################
+# Test models
+####################################################################
+
+class Person(pe.Model):
+    name = peewee.TextField(null=False)
+    city = peewee.TextField(null=False)
 
 
 class CompoundModel(pe.Model):
@@ -20,46 +114,80 @@ class CompoundModel(pe.Model):
         primary_key = peewee.CompositeKey("field1", "field2")
 
 
-@pytest.fixture
-def dbm():
-    # create manager
-    dbm = pe.DatabaseManager()
-
-    # create db default
-    db_default = playhouse.db_url.connect('sqlite:///:memory:')
-    dbm['default'] = db_default
-    
-    # register models
-    dbm.models.register(SingleModel)
-    dbm.models.register(CompoundModel)
-
-    dbm.connect()
-    dbm.models.create_tables()
-    yield dbm
-    dbm.disconnect()
-
-
 
 ####################################################################
 # Test CRUD
 ####################################################################
 
+
 class TestPrimaryKeyPagination:
-    def generate_single_rows(self):
-        """Generate 100 rows of predictable data"""
+    
+    def generate(self, *args, **kwargs):
+        query = pe.PrimaryKeyPagination.paginate_query(*args, **kwargs)
+        return [ r.__data__ for r in query ]
 
-        # create 10 cats
-        items = [ dict(label='a') for x in range(50) ]
-        items += [ dict(label='b') for x in range(50) ]
-        SingleModel.insert_many(items).execute()
-        assert SingleModel.select().count() == 100
+    def test_limit(self, dbm):
+        """Test query limiting"""
+        query = Person.select()
 
-    def generate_compound_rows(self):
-        """Insert 100 predictable compound items"""
-        items = [ dict(field1=x, field2=x%2) for x in range(100) ]
-        CompoundModel.insert_many(items).execute()
-        assert CompoundModel.select().count() == 100
+        # 100 items, no offset, no user sorting
+        results = self.generate(query=query, offset=None, count=100)
+        expected = rs.check('test_limit_1', results)
+        assert results == expected
 
+        # 50 items, no offset, no user sorting
+        results = self.generate(query=query, offset=None, count=50)
+        assert len(results) == 50
+        expected = rs.check('test_limit_2', results)
+        assert results == expected
+
+    def test_sort(self, dbm):
+        query = Person.select()
+
+        # 100 items, no offset, sort by name(asc)
+        sort = [('name', 'asc')]
+        results = self.generate(query=query, offset=None, count=100, sort=sort)
+        expected = rs.check('test_sort_1', results)
+        assert results == expected
+ 
+        # 100 items, no offset, sort by name(desc)
+        sort = [('name', 'desc')]
+        results = self.generate(query=query, offset=None, count=100, sort=sort)
+        expected = rs.check('test_sort_2', results)
+        assert results == expected
+
+        # 100 items, no offset, sorted
+        sort = [('city', 'asc'), ('name', 'asc')]
+        results = self.generate(query=query, offset=None, count=100, sort=sort)
+        expected = rs.check('test_sort_3', results)
+        assert results == expected
+
+        # 100 items, no offset, sorted
+        sort = [('city', 'asc'), ('name', 'desc')]
+        results = self.generate(query=query, offset=None, count=100, sort=sort)
+        expected = rs.check('test_sort_4', results)
+        assert results == expected
+
+    def test_offset(self, dbm):
+        query = Person.select()
+
+        # 100 items (expect 50), offset 50, sort by name(asc)
+        sort = [('name', 'asc')]
+        results = self.generate(query=query, offset=51, count=100, sort=sort)
+        assert len(results) == 50
+        expected = rs.check('test_offset_1', results)
+        assert results == expected
+
+        # 100 items (expect 50), offset 50, no sort (defaults to pk sort)
+        results = self.generate(query=query, offset=51, count=100)
+        assert len(results) == 50
+        expected = rs.check('test_offset_2', results)
+        assert results == expected
+
+        #print(tabulate(results, headers="keys")); assert False
+
+
+    '''
     def test_offset_query_missing_pk(self, dbm):
         self.generate_compound_rows()
         # TODO: implement (should fail)
@@ -67,25 +195,10 @@ class TestPrimaryKeyPagination:
     def test_offset_query_compound_pk(self, dbm):
         self.generate_compound_rows()
         # TODO: implement (should fail)
-   
-    def test_offset_query_single(self, dbm):
-        """Test query offset on single PK"""
-        self.generate_single_rows()
-        query = SingleModel.select()
-
-        # expect 50 items starting from id=50
-        squery = pe.PrimaryKeyPagination.paginate_query(
-            query=query, offset=51, count=100)
-        results = list(squery.tuples())
-        assert len(results) == 50
-        assert results[0] == (51, 'b')
-        assert results[-1] == (100, 'b')
-
+  
     def test_sort_asc_single(self, dbm):
         """Test ascending sorting with single field"""
-        self.generate_single_rows()
-
-        query = SingleModel.select()
+        query = Person.select()
         sort_params = [('label', 'asc')]
         query = pe.PrimaryKeyPagination.paginate_query(
             query=query, offset=0, count=100, sort_params=sort_params)
@@ -95,9 +208,7 @@ class TestPrimaryKeyPagination:
 
     def test_sort_desc_single(self, dbm):
         """Test descending sorting with single field"""
-        self.generate_single_rows()
-
-        query = SingleModel.select()
+        query = Person.select()
         sort_params = [('label', 'desc')]
         query = pe.PrimaryKeyPagination.paginate_query(
             query=query, offset=0, count=100, sort_params=sort_params)
@@ -109,10 +220,9 @@ class TestPrimaryKeyPagination:
 
     def test_sort_multi(self, dbm):
         """Test sorting with multiple fields"""
-        self.generate_single_rows()
 
         # asc/asc
-        query = SingleModel.select()
+        query = Person.select()
         sort_params = [('label', 'asc'), ('id', 'asc')]
         query = pe.PrimaryKeyPagination.paginate_query(
             query=query, offset=0, count=100, sort_params=sort_params)
@@ -121,7 +231,7 @@ class TestPrimaryKeyPagination:
         assert results[-1] == (100, 'b')
 
         # asc/desc
-        query = SingleModel.select()
+        query = Person.select()
         sort_params = [('label', 'asc'), ('id', 'desc')]
         query = pe.PrimaryKeyPagination.paginate_query(
             query=query, offset=0, count=100, sort_params=sort_params)
@@ -129,4 +239,4 @@ class TestPrimaryKeyPagination:
         assert results[0] == (50, 'a')
         assert results[50] == (100, 'b')
         assert results[-1] == (51, 'b')
-
+    '''
