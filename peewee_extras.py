@@ -191,8 +191,6 @@ class Pagination:
     pass
 
 
-
-
 class PrimaryKeyPagination(Pagination):
     """
     Primary key pagination
@@ -200,8 +198,6 @@ class PrimaryKeyPagination(Pagination):
     It does not support models with compound keys or no primary key
     as doing so would require using LIMIT/OFFSET which has terrible
     performance at scale. If you want this, send a PR. 
-
-    XXX: Do we want to add encryption support? (yes but it should be outside here)
     """
 
     @classmethod
@@ -259,8 +255,6 @@ class PrimaryKeyPagination(Pagination):
         # apply ordering and limits
         query = query.order_by(*order_bys)
         query = query.limit(count)
-
-        #print(query.sql())
         return query
 
 
@@ -268,6 +262,7 @@ class PrimaryKeyPagination(Pagination):
 # Model List
 # XXX: Restrict which fields can be filtered
 # XXX: Add sort capabilities
+# XXX: Do we want to add encryption support? (yes but it should be outside here)
 ####################################################################
 
 

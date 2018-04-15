@@ -1,11 +1,9 @@
 [run]
 branch=False
-data_file = .coverage
+data_file = /tmp/.coverage
 
 [report]
 include=peewee_extras.py
 show_missing = True
 #fail_under = 98
 
-[html]
-directory = build/coverage

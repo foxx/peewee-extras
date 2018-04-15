@@ -22,11 +22,8 @@ def dbm():
     dbm = DatabaseManager()
 
     # create db default
-    db_default = playhouse.db_url.connect('sqlite:///:memory:')
-    dbm['default'] = db_default
-
-    db_other = playhouse.db_url.connect('sqlite:///:memory:')
-    dbm['other'] = db_other
+    dbm.register('default', 'sqlite:///:memory:')
+    dbm.register('other', 'sqlite:///:memory:')
     
     dbm.connect()
     yield dbm

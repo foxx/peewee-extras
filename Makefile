@@ -4,7 +4,10 @@ test:
 	pipenv run python3 -m pytest
 
 dcbuild:
-	docker-compose build peewee_extras
+	docker-compose build \
+		--build-arg NEWUID=$(shell id -u) \
+		--build-arg NEWGID=$(shell id -g) \
+		peewee_extras
 
 dcshell:
 	docker-compose run $(DC_RUN_OPTS) peewee_extras /bin/bash -i
